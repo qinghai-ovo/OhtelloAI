@@ -1,6 +1,0 @@
-MonteAI_94,1,0
-MonteAI_858,0,1
-MonteAI_774,0,1
-AlphaBeta,2,3
-ABTT,3,2
-MonteAI_755,1,0
