@@ -1,1 +1,23 @@
 Server/score_desktop.txt
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
+
+# javac output (按你的实际输出目录调整/增删)
+out/
+bin/
+target/
+build/
+
+# Java compiled
+*.class
+
+# Logs / temp
+*.log
+hs_err_pid*
+replay_pid*
+*.swp
+*.swo
