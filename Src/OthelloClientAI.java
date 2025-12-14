@@ -21,7 +21,7 @@ public class OthelloClientAI {
      * Turn on local debug output (stderr).
      * Keep this false for normal matches to avoid noisy logs.
      */
-    private static final boolean DEBUG = false;
+    private static final boolean DEBUG = true;
 
     /**
      * Enable node-count statistics output (stderr).
@@ -35,14 +35,32 @@ public class OthelloClientAI {
 
     public static void main(String[] args) {
         if (args.length < 2) {
-            System.err.println("Usage: java OthelloClientAI <host> <port>");
+            System.err.println("Usage: java OthelloClientAI <host> <port> [tt|ab]");
             System.exit(2);
         }
 
         String host = args[0];
         int port = Integer.parseInt(args[1]);
 
-        OthelloMyAI ai = new OthelloMyAI();
+        String mode = (args.length >= 3) ? args[2].trim().toLowerCase() : "tt";
+        OthelloAgent ai;
+        switch (mode) {
+            case "tt":
+            case "my":
+            case "transposition":
+                ai = new OthelloMyAI();
+                break;
+            case "ab":
+            case "alphabeta":
+            case "baseline":
+                ai = new OthelloAlphaBetaAI();
+                break;
+            default:
+                System.err.println("Unknown AI mode: " + args[2]);
+                System.err.println("Usage: java OthelloClientAI <host> <port> [tt|ab]");
+                System.exit(2);
+                return;
+        }
         int[][] board = new int[8][8];
         int myColor = 0;
 
@@ -71,7 +89,8 @@ public class OthelloClientAI {
 
             for (String line; (line = br.readLine()) != null; ) {
                 if (line.startsWith("BOARD ")) {
-                    board = OthelloMyAI.parseBoardPayload(line.substring("BOARD ".length()));
+                    // Parsing is independent from the AI implementation; keep it local to the client.
+                    board = parseBoardPayload(line.substring("BOARD ".length()));
                     continue;
                 }
 
@@ -110,5 +129,19 @@ public class OthelloClientAI {
             System.err.println("Client error: " + e.getMessage());
             System.exit(1);
         }
+    }
+
+    /** Parse the server BOARD payload into board[x][y]. */
+    private static int[][] parseBoardPayload(String payload) {
+        int[][] board = new int[8][8];
+        String[] parts = payload.trim().split("\\s+");
+        if (parts.length != 64) return board;
+        int k = 0;
+        for (int x = 0; x < 8; x++) {
+            for (int y = 0; y < 8; y++) {
+                board[x][y] = Integer.parseInt(parts[k++]);
+            }
+        }
+        return board;
     }
 }

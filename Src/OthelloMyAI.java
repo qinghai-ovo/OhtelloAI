@@ -4,6 +4,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.SplittableRandom;
 
 /**
  * Pure AI logic (no networking).
@@ -18,7 +19,7 @@ import java.util.Map;
  * - Replace the old plain recursion with alpha-beta pruning
  * - Add node counting statistics (for later comparison)
  */
-public class OthelloMyAI {
+public class OthelloMyAI implements OthelloAgent {
     private static final int SIZE = 8;
 
     private static final int[][] WEIGHT = {
@@ -42,7 +43,40 @@ public class OthelloMyAI {
      * Search depth for alpha-beta.
      * A small depth is safer for the teacher server time limits; tune later.
      */
-    private static final int SEARCH_DEPTH = 5;
+    private static final int SEARCH_DEPTH = 10;
+
+    /**
+     * Transposition table (TT) hard cap.
+     * This implementation uses a simple HashMap; when it grows too large we clear it to avoid OOM.
+     *
+     * If you want a stronger TT later:
+     * - replace with a fixed-size array + replacement scheme
+     * - or persist across turns instead of clearing every chooseMove()
+     */
+    private static final int TT_MAX_SIZE = 200_000;
+
+    /**
+     * Zobrist hashing:
+     * - Each (square, pieceColor) pair has a random 64-bit number.
+     * - The board key is XOR of all occupied squares plus an extra "side-to-move" random.
+     *
+     * Notes:
+     * - We only need numbers for black/white; empty squares contribute nothing.
+     * - We use a fixed seed so results are deterministic across runs (easier debugging/comparison).
+     */
+    private static final long[][] ZOBRIST = new long[64][2]; // [pos][0=black,1=white]
+    private static final long Z_SIDE_BLACK;
+    private static final long Z_SIDE_WHITE;
+
+    static {
+        SplittableRandom r = new SplittableRandom(0x6323041L);
+        for (int i = 0; i < 64; i++) {
+            ZOBRIST[i][0] = r.nextLong();
+            ZOBRIST[i][1] = r.nextLong();
+        }
+        Z_SIDE_BLACK = r.nextLong();
+        Z_SIDE_WHITE = r.nextLong();
+    }
 
     /**
      * Node counter for the most recent call to {@link #chooseMove(int[][], int)}.
@@ -50,8 +84,14 @@ public class OthelloMyAI {
      */
     private long lastSearchNodes = 0;
 
+    /**
+     * Per-search transposition table.
+     * Key is the Zobrist hash of (board + side-to-move).
+     */
+    private Map<Long, TTEntry> tt = new HashMap<>();
+
     public String nickname() {
-        return "6323041";
+        return "ABTT";
     }
 
     /**
@@ -59,6 +99,11 @@ public class OthelloMyAI {
      * @param myColor 1 (black) or -1 (white)
      */
     public Point chooseMove(int[][] board, int myColor) {
+        // New search => clear TT.
+        // Keeping TT per-move avoids stale entries across different root positions,
+        // and keeps behavior easy to reason about while you validate correctness.
+        tt.clear();
+
         // Root: generate legal moves for "me". If none exist, return null.
         // (Teacher server usually avoids sending TURN when you have no moves,
         // but keeping this makes the AI logic complete.)
@@ -86,7 +131,7 @@ public class OthelloMyAI {
             applyMove(next, move, myColor);
 
             // After my move, opponent moves next.
-            int value = alphaBeta(next, -myColor, SEARCH_DEPTH - 1, alpha, beta, myColor, stats);
+            int value = alphaBeta(next, -myColor, SEARCH_DEPTH - 1, alpha, beta, myColor, stats, tt);
             if (value > bestValue) {
                 bestValue = value;
                 bestMove = move;
@@ -239,48 +284,177 @@ public class OthelloMyAI {
             int alpha,
             int beta,
             int myColor,
-            SearchStats stats
+            SearchStats stats,
+            Map<Long, TTEntry> tt
     ) {
         stats.nodes++;
 
+        // Depth-limited leaf.
+        if (depth <= 0) {
+            return evaluate(board, myColor);
+        }
+
+        // Compute TT key for this node (board + side to move).
+        long key = computeKey(board, currentColor);
+
+        // TT probe:
+        // - If we have a stored result at sufficient depth, we can:
+        //   - return EXACT immediately
+        //   - or tighten alpha/beta with LOWER/UPPER bounds
+        // - If the window becomes empty, we can cutoff early.
+        TTEntry cached = null;
+        if (tt != null) {
+            stats.ttProbes++;
+            cached = tt.get(key);
+            if (cached != null && cached.depth >= depth) {
+                stats.ttHits++;
+                if (cached.flag == TTEntry.EXACT) {
+                    return cached.value;
+                }
+                if (cached.flag == TTEntry.LOWERBOUND) {
+                    alpha = Math.max(alpha, cached.value);
+                } else if (cached.flag == TTEntry.UPPERBOUND) {
+                    beta = Math.min(beta, cached.value);
+                }
+                if (alpha >= beta) {
+                    stats.ttCutoffs++;
+                    return cached.value;
+                }
+            }
+        }
+
+        // Remember the original window so we can set the TT flag on store.
+        int alphaOrig = alpha;
+        int betaOrig = beta;
+
         // Terminal checks.
         List<Point> moves = getLegalMoves(board, currentColor);
-        if (depth <= 0 || moves.isEmpty() && getLegalMoves(board, -currentColor).isEmpty()) {
-            return evaluate(board, myColor);
+        if (moves.isEmpty() && getLegalMoves(board, -currentColor).isEmpty()) {
+            int value = evaluate(board, myColor);
+            storeTT(tt, key, depth, value, TTEntry.EXACT, null);
+            return value;
         }
 
         // Pass move: no legal moves for current player, but opponent can move.
         if (moves.isEmpty()) {
-            return alphaBeta(board, -currentColor, depth - 1, alpha, beta, myColor, stats);
+            int value = alphaBeta(board, -currentColor, depth - 1, alpha, beta, myColor, stats, tt);
+            storeTT(tt, key, depth, value, TTEntry.EXACT, null);
+            return value;
         }
 
         // Move ordering: helps pruning. (Heuristic: square weight)
         moves.sort(Comparator.comparingInt((Point p) -> WEIGHT[p.x][p.y]).reversed());
 
+        // If TT has a suggested bestMove, try it first (often improves alpha-beta cutoffs).
+        if (cached != null && cached.bestMove != null) {
+            int idx = moves.indexOf(cached.bestMove);
+            if (idx > 0) {
+                Point bm = moves.remove(idx);
+                moves.add(0, bm);
+            }
+        }
+
         boolean isMax = (currentColor == myColor);
+        Point bestMove = null;
         if (isMax) {
             int best = Integer.MIN_VALUE;
             for (Point m : moves) {
                 int[][] next = copyBoard(board);
                 applyMove(next, m, currentColor);
-                int value = alphaBeta(next, -currentColor, depth - 1, alpha, beta, myColor, stats);
-                best = Math.max(best, value);
+                int value = alphaBeta(next, -currentColor, depth - 1, alpha, beta, myColor, stats, tt);
+                if (value > best) {
+                    best = value;
+                    bestMove = m;
+                }
                 alpha = Math.max(alpha, best);
                 if (alpha >= beta) break; // beta cut
             }
+            // Store TT with appropriate bound type (EXACT/LOWER/UPPER) based on the original window.
+            storeTT(tt, key, depth, best, flagFromWindow(best, alphaOrig, betaOrig), bestMove);
             return best;
         } else {
             int best = Integer.MAX_VALUE;
             for (Point m : moves) {
                 int[][] next = copyBoard(board);
                 applyMove(next, m, currentColor);
-                int value = alphaBeta(next, -currentColor, depth - 1, alpha, beta, myColor, stats);
-                best = Math.min(best, value);
+                int value = alphaBeta(next, -currentColor, depth - 1, alpha, beta, myColor, stats, tt);
+                if (value < best) {
+                    best = value;
+                    bestMove = m;
+                }
                 beta = Math.min(beta, best);
                 if (alpha >= beta) break; // alpha cut
             }
+            // Store TT with appropriate bound type (EXACT/LOWER/UPPER) based on the original window.
+            storeTT(tt, key, depth, best, flagFromWindow(best, alphaOrig, betaOrig), bestMove);
             return best;
         }
+    }
+
+    /**
+     * Convert a returned minimax value to a TT flag:
+     * - If it fails low (<= alphaOrig): upper bound
+     * - If it fails high (>= betaOrig): lower bound
+     * - Otherwise: exact value inside window
+     */
+    private static byte flagFromWindow(int value, int alphaOrig, int betaOrig) {
+        if (value <= alphaOrig) return TTEntry.UPPERBOUND;
+        if (value >= betaOrig) return TTEntry.LOWERBOUND;
+        return TTEntry.EXACT;
+    }
+
+    /**
+     * Store (or update) a transposition table entry.
+     *
+     * Replacement policy (simple):
+     * - If an entry exists at this key and its recorded depth is deeper, keep it.
+     * - Otherwise overwrite.
+     *
+     * Memory policy (simple):
+     * - When the map grows beyond TT_MAX_SIZE, clear everything.
+     */
+    private static void storeTT(Map<Long, TTEntry> tt, long key, int depth, int value, byte flag, Point bestMove) {
+        if (tt == null) return;
+        if (tt.size() > TT_MAX_SIZE) {
+            tt.clear();
+        }
+        TTEntry e = tt.get(key);
+        if (e == null) {
+            e = new TTEntry();
+            tt.put(key, e);
+        } else if (e.depth > depth) {
+            // Keep deeper results.
+            return;
+        }
+        e.key = key;
+        e.depth = depth;
+        e.value = value;
+        e.flag = flag;
+        e.bestMove = bestMove;
+    }
+
+    /**
+     * Compute a Zobrist key for the current node.
+     *
+     * Mapping from (x,y) to ZOBRIST index:
+     * - idx increments with y inner loop, x outer loop: idx = x * 8 + y
+     */
+    private static long computeKey(int[][] board, int currentColor) {
+        long h = 0L;
+        int idx = 0;
+        for (int x = 0; x < SIZE; x++) {
+            for (int y = 0; y < SIZE; y++) {
+                int v = board[x][y];
+                if (v == 1) {
+                    h ^= ZOBRIST[idx][0];
+                } else if (v == -1) {
+                    h ^= ZOBRIST[idx][1];
+                }
+                idx++;
+            }
+        }
+        h ^= (currentColor == 1) ? Z_SIDE_BLACK : Z_SIDE_WHITE;
+        return h;
     }
 
     private static boolean inBounds(int x, int y) {
@@ -328,5 +502,28 @@ public class OthelloMyAI {
     /** Mutable stats holder passed through alpha-beta recursion. */
     private static final class SearchStats {
         long nodes = 0;
+        long ttProbes = 0;
+        long ttHits = 0;
+        long ttCutoffs = 0;
+    }
+
+    /**
+     * TT entry stored per (board + side-to-move) key.
+     *
+     * Flag meanings:
+     * - EXACT: stored value is exact for this depth
+     * - LOWERBOUND: true value >= stored value (fail-high)
+     * - UPPERBOUND: true value <= stored value (fail-low)
+     */
+    private static final class TTEntry {
+        static final byte EXACT = 0;
+        static final byte LOWERBOUND = 1;
+        static final byte UPPERBOUND = 2;
+
+        long key;
+        int depth;
+        int value;
+        byte flag;
+        Point bestMove;
     }
 }

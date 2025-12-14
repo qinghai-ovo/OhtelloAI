@@ -18,7 +18,7 @@ import java.util.Map;
  * - Replace the old plain recursion with alpha-beta pruning
  * - Add node counting statistics (for later comparison)
  */
-public class OthelloAlphaBetaAI {
+public class OthelloAlphaBetaAI implements OthelloAgent {
     private static final int SIZE = 8;
 
     private static final int[][] WEIGHT = {
@@ -42,7 +42,7 @@ public class OthelloAlphaBetaAI {
      * Search depth for alpha-beta.
      * A small depth is safer for the teacher server time limits; tune later.
      */
-    private static final int SEARCH_DEPTH = 5;
+    private static final int SEARCH_DEPTH = 10;
 
     /**
      * Node counter for the most recent call to {@link #chooseMove(int[][], int)}.
@@ -51,7 +51,7 @@ public class OthelloAlphaBetaAI {
     private long lastSearchNodes = 0;
 
     public String nickname() {
-        return "6323041";
+        return "AlphaBeta";
     }
 
     /**
