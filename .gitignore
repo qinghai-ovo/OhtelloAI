@@ -15,6 +15,9 @@ build/
 # Java compiled
 *.class
 
+!TestSet/
+!TestSet/*.class
+
 # Logs / temp
 *.log
 hs_err_pid*
