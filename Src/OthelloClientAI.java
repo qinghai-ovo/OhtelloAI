@@ -34,20 +34,60 @@ public class OthelloClientAI {
     private static final boolean STATS = true;
 
     public static void main(String[] args) {
-        if (args.length < 2) {
-            System.err.println("Usage: java OthelloClientAI <host> <port> [tt|ab]");
+        if (args.length < 1) {
+            System.err.println("Usage:");
+            System.err.println("  java OthelloClientAI <host> <port> [tt|ab|my] [seconds]");
+            System.err.println("  java OthelloClientAI <port> [tt|ab|my] [seconds]   (host defaults to localhost)");
             System.exit(2);
         }
 
-        String host = args[0];
-        int port = Integer.parseInt(args[1]);
+	        String host = "localhost";
+	        int port;
+	        int tailStart;
 
-        String mode = (args.length >= 3) ? args[2].trim().toLowerCase() : "tt";
+	        // Parse head:
+	        // - If first arg is numeric => treat as <port> and host defaults to localhost
+	        // - Otherwise => treat as <host> <port>
+	        if (isInt(args[0])) {
+	            port = Integer.parseInt(args[0]);
+	            tailStart = 1;
+	        } else {
+	            if (args.length < 2) {
+	                System.err.println("Usage:");
+	                System.err.println("  java OthelloClientAI <host> <port> [tt|ab|my] [seconds]");
+	                System.err.println("  java OthelloClientAI <port> [tt|ab|my] [seconds]");
+	                System.exit(2);
+	                return;
+	            }
+	            host = args[0];
+	            port = Integer.parseInt(args[1]);
+	            tailStart = 2;
+	        }
+
+        // Tail:
+        // - optional [mode]
+        // - optional [seconds] (recognized only if it's the last argument and numeric)
+        String mode = "tt";
+        double seconds = 1.0; // default per-move time budget
+        int tailEnd = args.length;
+        if (tailEnd > tailStart) {
+            Double sec = tryParseDouble(args[tailEnd - 1]);
+            if (sec != null) {
+	                seconds = sec;
+	                tailEnd--;
+	            }
+	        }
+	        if (tailEnd > tailStart) {
+	            mode = args[tailStart].trim().toLowerCase();
+	        }
+
         OthelloAgent ai;
         switch (mode) {
             case "tt":
-            case "my":
             case "transposition":
+                ai = new OthelloTTAI();
+                break;
+            case "my":
                 ai = new OthelloMyAI();
                 break;
             case "ab":
@@ -56,11 +96,17 @@ public class OthelloClientAI {
                 ai = new OthelloAlphaBetaAI();
                 break;
             default:
-                System.err.println("Unknown AI mode: " + args[2]);
-                System.err.println("Usage: java OthelloClientAI <host> <port> [tt|ab]");
+                System.err.println("Unknown AI mode: " + mode);
+                System.err.println("Usage:");
+                System.err.println("  java OthelloClientAI <host> <port> [tt|ab|my] [seconds]");
+                System.err.println("  java OthelloClientAI <port> [tt|ab|my] [seconds]");
                 System.exit(2);
                 return;
         }
+
+        long timeLimitMillis = secondsToMillis(seconds);
+        ai.setTimeLimitMillis(timeLimitMillis);
+
         int[][] board = new int[8][8];
         int myColor = 0;
 
@@ -122,6 +168,9 @@ public class OthelloClientAI {
                         long avg = totalNodes / myTurns;
                         System.err.println("STATS myTurns=" + myTurns + " totalNodes=" + totalNodes + " avgNodes=" + avg + " maxNodes=" + maxNodes);
                     }
+                    // Be polite: tell server we're done before closing the socket.
+                    // Some server implementations log "connection reset" if the client closes immediately.
+                    pw.println("CLOSE");
                     break;
                 }
             }
@@ -143,5 +192,29 @@ public class OthelloClientAI {
             }
         }
         return board;
+    }
+
+    private static Double tryParseDouble(String s) {
+        try {
+            return Double.parseDouble(s);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static boolean isInt(String s) {
+        try {
+            Integer.parseInt(s);
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    private static long secondsToMillis(double seconds) {
+        if (!Double.isFinite(seconds) || seconds <= 0) return 1000L;
+        double ms = seconds * 1000.0;
+        if (ms > Long.MAX_VALUE) return Long.MAX_VALUE;
+        return Math.max(1L, (long) ms);
     }
 }
