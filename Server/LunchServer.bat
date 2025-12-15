@@ -12,7 +12,7 @@ set "PORT=25033"
 set "MONITOR=1"    REM 1=enable GUI monitor (-monitor), 0=disable
 set "DEBUG=0"      REM 1=enable (-debug), 0=disable
 set "TIMEOUT=0"    REM seconds; 0=disable (-timeout)
-set "SCORE=0"      REM 1=enable score output (-score), 0=disable
+set "SCORE=1"      REM 1=enable score output (-score), 0=disable
 
 REM Optionally override PORT from first argument: LunchServer.bat 25033
 if not "%~1"=="" set "PORT=%~1"

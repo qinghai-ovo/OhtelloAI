@@ -24,3 +24,8 @@ hs_err_pid*
 replay_pid*
 *.swp
 *.swo
+
+# Local benchmark outputs
+benchmarks/
+
+*.md

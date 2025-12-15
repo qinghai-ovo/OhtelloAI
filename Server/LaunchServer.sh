@@ -13,7 +13,7 @@ cd "$SCRIPT_DIR"
 PORT="${PORT:-25033}"
 MONITOR="${MONITOR:-1}"
 DEBUG="${DEBUG:-0}"
-TIMEOUT="${TIMEOUT:-0}"
+TIMEOUT="${TIMEOUT:-10}"
 SCORE="${SCORE:-0}"
 
 if [[ ! -f "OthelloServer.jar" ]]; then

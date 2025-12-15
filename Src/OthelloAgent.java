@@ -11,6 +11,14 @@ public interface OthelloAgent {
     String nickname();
 
     /**
+     * Set time budget for {@link #chooseMove(int[][], int)}.
+     * Implementations may ignore or clamp this value.
+     */
+    default void setTimeLimitMillis(long millis) {
+        // Optional for implementations.
+    }
+
+    /**
      * @param board board[x][y]
      * @param myColor 1 (black) or -1 (white)
      * @return chosen move (x,y), or null if no legal move exists

@@ -19,7 +19,7 @@ import java.util.SplittableRandom;
  * - Replace the old plain recursion with alpha-beta pruning
  * - Add node counting statistics (for later comparison)
  */
-public class OthelloMyAI implements OthelloAgent {
+public class OthelloTTAI implements OthelloAgent {
     private static final int SIZE = 8;
 
     private static final int[][] WEIGHT = {

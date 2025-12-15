@@ -39,16 +39,23 @@ public class OthelloAlphaBetaAI implements OthelloAgent {
     };
 
     /**
-     * Search depth for alpha-beta.
-     * A small depth is safer for the teacher server time limits; tune later.
+     * Maximum depth cap for iterative deepening.
+     * Real stopping condition is the time limit; this is just a safety bound.
      */
-    private static final int SEARCH_DEPTH = 10;
+    private static final int MAX_DEPTH = 60;
 
     /**
      * Node counter for the most recent call to {@link #chooseMove(int[][], int)}.
      * This is useful to verify that alpha-beta pruning is working and to compare with TT later.
      */
     private long lastSearchNodes = 0;
+
+    private long timeLimitMillis = 1000L;
+
+    @Override
+    public void setTimeLimitMillis(long millis) {
+        this.timeLimitMillis = Math.max(1L, millis);
+    }
 
     public String nickname() {
         return "AlphaBeta";
@@ -73,25 +80,44 @@ public class OthelloAlphaBetaAI implements OthelloAgent {
         legalMoves.sort(Comparator.comparingInt((Point p) -> WEIGHT[p.x][p.y]).reversed());
 
         SearchStats stats = new SearchStats();
-        Point bestMove = legalMoves.get(0);
+        Point bestMove = legalMoves.get(0); // fallback if time is too tight
         int bestValue = Integer.MIN_VALUE;
 
-        // Standard alpha-beta at root.
-        // Value is always from "myColor" perspective.
-        int alpha = Integer.MIN_VALUE;
-        int beta = Integer.MAX_VALUE;
+        long deadlineNanos = System.nanoTime() + Math.max(1L, timeLimitMillis) * 1_000_000L;
+        for (int depth = 1; depth <= MAX_DEPTH; depth++) {
+            try {
+                // Standard alpha-beta at root for this iteration.
+                // Value is always from "myColor" perspective.
+                int alpha = Integer.MIN_VALUE;
+                int beta = Integer.MAX_VALUE;
 
-        for (Point move : legalMoves) {
-            int[][] next = copyBoard(board);
-            applyMove(next, move, myColor);
+                Point iterBestMove = bestMove;
+                int iterBestValue = Integer.MIN_VALUE;
 
-            // After my move, opponent moves next.
-            int value = alphaBeta(next, -myColor, SEARCH_DEPTH - 1, alpha, beta, myColor, stats);
-            if (value > bestValue) {
-                bestValue = value;
-                bestMove = move;
+                for (Point move : legalMoves) {
+                    checkTime(deadlineNanos);
+                    int[][] next = copyBoard(board);
+                    applyMove(next, move, myColor);
+
+                    // After my move, opponent moves next.
+                    int value = alphaBeta(next, -myColor, depth - 1, alpha, beta, myColor, stats, deadlineNanos);
+                    if (value > iterBestValue) {
+                        iterBestValue = value;
+                        iterBestMove = move;
+                    }
+                    alpha = Math.max(alpha, iterBestValue);
+                }
+
+                // Completed this depth.
+                bestMove = iterBestMove;
+                bestValue = iterBestValue;
+
+                // Keep best move first for next iteration.
+                legalMoves.remove(bestMove);
+                legalMoves.add(0, bestMove);
+            } catch (TimeUp ignored) {
+                break;
             }
-            alpha = Math.max(alpha, bestValue);
         }
 
         lastSearchNodes = stats.nodes;
@@ -239,9 +265,11 @@ public class OthelloAlphaBetaAI implements OthelloAgent {
             int alpha,
             int beta,
             int myColor,
-            SearchStats stats
+            SearchStats stats,
+            long deadlineNanos
     ) {
         stats.nodes++;
+        checkTime(deadlineNanos);
 
         // Terminal checks.
         List<Point> moves = getLegalMoves(board, currentColor);
@@ -251,7 +279,7 @@ public class OthelloAlphaBetaAI implements OthelloAgent {
 
         // Pass move: no legal moves for current player, but opponent can move.
         if (moves.isEmpty()) {
-            return alphaBeta(board, -currentColor, depth - 1, alpha, beta, myColor, stats);
+            return alphaBeta(board, -currentColor, depth - 1, alpha, beta, myColor, stats, deadlineNanos);
         }
 
         // Move ordering: helps pruning. (Heuristic: square weight)
@@ -261,9 +289,10 @@ public class OthelloAlphaBetaAI implements OthelloAgent {
         if (isMax) {
             int best = Integer.MIN_VALUE;
             for (Point m : moves) {
+                checkTime(deadlineNanos);
                 int[][] next = copyBoard(board);
                 applyMove(next, m, currentColor);
-                int value = alphaBeta(next, -currentColor, depth - 1, alpha, beta, myColor, stats);
+                int value = alphaBeta(next, -currentColor, depth - 1, alpha, beta, myColor, stats, deadlineNanos);
                 best = Math.max(best, value);
                 alpha = Math.max(alpha, best);
                 if (alpha >= beta) break; // beta cut
@@ -272,14 +301,28 @@ public class OthelloAlphaBetaAI implements OthelloAgent {
         } else {
             int best = Integer.MAX_VALUE;
             for (Point m : moves) {
+                checkTime(deadlineNanos);
                 int[][] next = copyBoard(board);
                 applyMove(next, m, currentColor);
-                int value = alphaBeta(next, -currentColor, depth - 1, alpha, beta, myColor, stats);
+                int value = alphaBeta(next, -currentColor, depth - 1, alpha, beta, myColor, stats, deadlineNanos);
                 best = Math.min(best, value);
                 beta = Math.min(beta, best);
                 if (alpha >= beta) break; // alpha cut
             }
             return best;
+        }
+    }
+
+    private static void checkTime(long deadlineNanos) {
+        if (System.nanoTime() >= deadlineNanos) throw TimeUp.INSTANCE;
+    }
+
+    private static final class TimeUp extends RuntimeException {
+        static final TimeUp INSTANCE = new TimeUp();
+
+        @Override
+        public synchronized Throwable fillInStackTrace() {
+            return this;
         }
     }
 
